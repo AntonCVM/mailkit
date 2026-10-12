@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# The quality gate: lint + tests. Runs from any directory.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+if command -v ruff >/dev/null; then ruff check src tests; else echo "check: ruff not on PATH, lint skipped" >&2; fi
+PYTHONPATH=src python3 -m unittest discover -s tests -t . "$@"

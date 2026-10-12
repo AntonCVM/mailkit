@@ -1,0 +1,28 @@
+# mailkit config — see docs/config.md. Copy to ~/.config/mailkit/config.toml
+# (or point MAILKIT_CONFIG at it) and edit.
+
+[mailkit]
+instance = "personal"
+root = "~/Mail/personal"
+send_policy = "direct"
+
+[defaults]
+keyring = "pass-mail"          # KeePassXC Database name, Secret Service enabled
+seal = true
+
+[accounts.gmail]
+address = "someone@gmail.com"
+name = "Some One"
+imap = { host = "imap.gmail.com", port = 993, tls = "tls" }
+smtp = { host = "smtp.gmail.com", port = 465, tls = "tls" }
+sent_copy = false              # Gmail files the SMTP copy itself
+# Gmail names folders after the account language.
+folders = { inbox = "INBOX", sent = "[Gmail]/Sent Mail", drafts = "[Gmail]/Drafts", trash = "[Gmail]/Trash", spam = "[Gmail]/Spam" }
+
+[accounts.work]
+address = "me@example.org"
+name = "Me at Example"
+keyring = "pass-mail-work"     # a separate database: unlocks separately
+imap = { host = "mail.example.org", port = 993, tls = "tls" }
+smtp = { host = "mail.example.org", port = 587, tls = "starttls" }
+folders = { inbox = "INBOX", sent = "INBOX.Sent", drafts = "INBOX.Drafts", trash = "INBOX.Trash", spam = "INBOX.Junk" }
