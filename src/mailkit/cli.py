@@ -151,6 +151,17 @@ def cmd_secret(args) -> int:
 
 
 def cmd_keyrings(args) -> int:
+    if args.check:
+        # The switch, as an exit code, for timers and scripts: quiet, and no
+        # Secret Service at all counts as locked.
+        want = args.names or sorted({a.keyring for a in _inst().accounts.values() if a.keyring})
+        try:
+            state = {label: locked for _, label, locked in secrets.collections()}
+        except MailkitError:
+            return 1
+        return 0 if want and all(n in state and not state[n] for n in want) else 1
+    if args.names:
+        raise MailkitError("keyrings: names go with --check")
     for _, label, locked in secrets.collections():
         print(f"{label:<28} {'locked' if locked else 'unlocked'}")
     return 0
@@ -306,7 +317,13 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("account", help="account handle")
     s.add_argument("kind", nargs="?", default="password", choices=secrets.KINDS)
 
-    add("keyrings", cmd_keyrings, "list the Secret Service collections (= open KeePassXC databases)")
+    s = add("keyrings", cmd_keyrings, "list the Secret Service collections (= open KeePassXC databases)",
+            "List the Secret Service collections (= open KeePassXC databases).\n"
+            "--check: print nothing; exit 0 if every named keyring (default: every\n"
+            "keyring this instance's accounts use) is unlocked, 1 otherwise. For timers:\n"
+            "  ExecCondition=mailkit keyrings --check")
+    s.add_argument("--check", action="store_true", help="exit status only: 0 = all unlocked")
+    s.add_argument("names", nargs="*", help="keyring names (with --check)")
 
     s = add("nm", cmd_nm, "run notmuch on one account's index",
             "Runs notmuch with the account's profile (its index, inside its store):\n"

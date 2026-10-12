@@ -50,3 +50,4 @@ complete -c mailkit -n '__fish_seen_subcommand_from draft; and __fish_seen_subco
 
 complete -c mailkit -n '__fish_seen_subcommand_from send' -l approved -d 'Send every approved draft' -a '(mailkit __accounts) all'
 complete -c mailkit -n '__fish_seen_subcommand_from send' -l dry-run -d 'Print, send nothing'
+complete -c mailkit -n '__fish_seen_subcommand_from keyrings' -l check -d 'Exit 0 only if the keyrings are unlocked'

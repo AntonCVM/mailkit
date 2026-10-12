@@ -66,3 +66,14 @@ A flow is `mailkit sync <acct>` followed by whatever reads the index: `mailkit n
 id:<msgid>`, `mailkit nm <acct> tag +resumido -- id:<msgid>`. Tags live in the
 index, inside the store. A flow that runs while the store is closed or the
 keyring locked fails at the first step and says so — that is the switch working.
+
+To skip a scheduled run while the keyring is locked instead of failing it, gate
+it on the switch itself: `mailkit keyrings --check` prints nothing and exits 0
+only if every keyring the instance uses is unlocked. In a systemd unit:
+
+```ini
+[Service]
+Type=oneshot
+ExecCondition=mailkit keyrings --check   # locked → the run is skipped, not failed
+ExecStart=…
+```

@@ -175,5 +175,34 @@ class GeneratedTest(Tmp):
         self.assertIn("[archive-admin]\nsource = notmuch://mailkit.t.admin", conf)
 
 
+class KeyringsCheckTest(Tmp):
+    """`mailkit keyrings --check`: the unlock switch as an exit code."""
+
+    def check(self, cols, *names):
+        from unittest import mock
+
+        from mailkit import cli, secrets
+
+        cfg = self.tmp / "config.toml"
+        cfg.write_text(BASE.format(root=self.tmp / "Mail"))
+        with mock.patch.dict(os.environ, {"MAILKIT_CONFIG": str(cfg)}), \
+                mock.patch.object(secrets, "collections", side_effect=cols if callable(cols) else None,
+                                  return_value=None if callable(cols) else cols):
+            return cli.main(["keyrings", "--check", *names])
+
+    def test_instance_keyrings(self):
+        self.assertEqual(self.check([("/p", "kr", False), ("/q", "other", True)]), 0)
+        self.assertEqual(self.check([("/p", "kr", True)]), 1)
+        self.assertEqual(self.check([("/q", "other", False)]), 1)  # not exposed at all
+
+    def test_named_and_no_service(self):
+        self.assertEqual(self.check([("/q", "other", False)], "other"), 0)
+
+        def boom():
+            raise MailkitError("no Secret Service")
+
+        self.assertEqual(self.check(boom), 1)
+
+
 if __name__ == "__main__":
     os.sys.exit(unittest.main())
