@@ -139,7 +139,7 @@ def cmd_index(args) -> int:
 def _warn_dateless(a) -> None:
     n = index.dateless(a)
     if n:
-        log(f"{a.handle}: {n} message(s) outside the outbox dated 1970 — indexed from a dateless "
+        log(f"{a.handle}: {n} sent message(s) dated 1970 — indexed from a dateless "
             f"draft and never reindexed? Fix: mailkit nm {a.handle} reindex '{index.DATELESS}'")
 
 

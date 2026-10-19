@@ -143,10 +143,12 @@ def refresh(a: Account, msgid: str) -> None:
     run(a, "reindex", f"id:{msgid}")
 
 
-# A draft has no Date until it is sent (notmuch dates it 0); anything else
-# dated 1970 was indexed from such a draft and never refreshed. Epoch bounds:
-# notmuch 0.40 matches nothing at 0 with an open `date:..1971`.
-DATELESS = 'date:@0..@31535999 and not path:"outbox/**"'
+# A draft has no Date until it is sent (notmuch dates it 0); send always
+# writes a dated copy to sent/, so a message there dated 1970 was indexed from
+# its draft and never refreshed. Only sent/: mail from the server can lack a
+# Date for real, and a reindex would not change it. Epoch bounds: notmuch 0.40
+# matches nothing at 0 with an open `date:..1971`.
+DATELESS = 'date:@0..@31535999 and path:"sent/**"'
 
 
 def dateless(a: Account) -> int:

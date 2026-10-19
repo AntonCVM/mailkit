@@ -287,6 +287,15 @@ folders = {{ inbox = "INBOX", sent = "INBOX.Sent Items" }}
         rc, out, err = run("index", "admin")
         self.assertEqual(rc, 0, err)
         self.assertNotIn("1970", err)  # a dateless draft is legitimate
+        # So is server mail without a Date: a reindex would not change it.
+        inbox = self.tmp / "Mail" / "admin" / "mail" / "INBOX"
+        for sub in ("cur", "new", "tmp"):
+            (inbox / sub).mkdir(parents=True, exist_ok=True)
+        (inbox / "cur" / "2.M2P2Q2.host:2,S").write_text("Message-ID: <bank@x>\nFrom: a@b.c\nSubject: s\n\nx\n")
+        rc, out, err = run("index", "admin")
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(run("nm", "admin", "count", "id:bank@x")[1].strip(), "1")
+        self.assertNotIn("1970", err)
         box = self.tmp / "Mail" / "admin" / "sent" / "cur"
         (box / "1.M1P1Q1.host:2,S").write_text("Message-ID: <nodate@x>\nFrom: a@b.c\nSubject: s\n\nx\n")
         rc, out, err = run("index", "admin")
