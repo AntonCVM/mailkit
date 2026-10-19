@@ -123,6 +123,31 @@ def tag_rules(a: Account) -> list[str]:
 
 
 def update(a: Account) -> None:
-    """`notmuch new` + the tag rules. The one way the index moves forward."""
+    """`notmuch new` + the tag rules: picks up files that appeared or went away
+    (a sync, a delivery). Not enough after mailkit itself creates, rewrites or
+    replaces a message's file — that is `refresh`."""
     run(a, "new", "--quiet")
     run(a, "tag", "--batch", input="\n".join(tag_rules(a)) + "\n")
+
+
+def refresh(a: Account, msgid: str) -> None:
+    """`update` + `notmuch reindex id:<msgid>`: THE way mailkit updates the index
+    after creating, rewriting, replacing or removing a message's file.
+
+    notmuch takes a message's headers from the first file it indexed under
+    that Message-ID and keeps them: a file rewritten in place, or a second
+    file with the same id (the compiled copy in sent/ of a dateless draft),
+    changes nothing until reindexed. Without this a sent message stays dated
+    1970 and an edited draft keeps its first subject."""
+    update(a)
+    run(a, "reindex", f"id:{msgid}")
+
+
+# A draft has no Date until it is sent (notmuch dates it 0); anything else
+# dated 1970 was indexed from such a draft and never refreshed. Epoch bounds:
+# notmuch 0.40 matches nothing at 0 with an open `date:..1971`.
+DATELESS = 'date:@0..@31535999 and not path:"outbox/**"'
+
+
+def dateless(a: Account) -> int:
+    return int(run(a, "count", DATELESS).strip() or 0)

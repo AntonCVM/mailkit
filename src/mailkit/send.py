@@ -124,7 +124,9 @@ def send(e: outbox.Entry, password: str) -> bool:
             log(f"{a.handle}: SENT, but the copy to '{a.folders.sent}' failed: {ex} "
                 f"(kept in {a.sent_local})")
             ok = False
-    index.update(a)
+    # The sent/ copy carries the Date the draft lacked: reindex, or notmuch
+    # keeps the draft's headers (dated 1970) for it.
+    index.refresh(a, e.msgid)
     changes = ["-review", "-approved", "-draft", "+sent"] + ([] if ok else ["+copy-failed"])
     index.run(a, "tag", *changes, "--", f"id:{e.msgid}")
     return ok

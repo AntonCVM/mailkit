@@ -6,7 +6,8 @@ the D(raft) and S(een) flags, so notmuch indexes it like any message: it gets
 with the rest of the mail. Its Message-ID is set at creation and is its id.
 
 Review is a tag, not a place: `approve` swaps `review` for `approved`, and
-`send --approved` sends exactly those. Whether `send` also takes a draft
+`send --approved` sends exactly those. An approval is of a text: changing
+the draft (`edit`, `replace`) puts it back in review. Whether `send` also takes a draft
 nobody approved is the instance's `send_policy` — a convention for the
 people and agents using it, not a lock: anything that can read the unlocked
 keyring can send mail without mailkit. Locking KeePassXC is the lock.
@@ -26,7 +27,7 @@ from pathlib import Path
 
 from . import index, mml, seal
 from .config import Account, Instance
-from .util import MailkitError
+from .util import MailkitError, log
 
 _seq = 0
 
@@ -88,7 +89,7 @@ def new(a: Account, raw: str) -> Entry:
     seal.require_open(a)
     raw, msgid = prepare(a, raw)
     path = deliver(a.outbox, raw.encode("utf-8"), "DS")
-    index.update(a)
+    index.refresh(a, msgid)
     return Entry(a, path, msgid, tags_of(a, msgid), _headers(path))
 
 
@@ -199,10 +200,48 @@ def tag(e: Entry, *changes: str) -> None:
 
 def discard(e: Entry) -> None:
     e.path.unlink()
-    index.update(e.account)
+    index.refresh(e.account, e.msgid)
+
+
+def _changed(e: Entry, before: bytes) -> None:
+    """After the file was (maybe) rewritten: reindex, and if the text differs,
+    what was approved is no longer what would be sent — back to review."""
+    index.refresh(e.account, e.msgid)
+    if e.path.read_bytes() != before and "approved" in tags_of(e.account, e.msgid):
+        tag(e, "-approved", "+review")
+        log(f"{e.account.handle}: id:{e.msgid} changed — approval withdrawn, back to review")
 
 
 def edit(e: Entry) -> None:
     editor = os.environ.get("VISUAL") or os.environ.get("EDITOR") or "vi"
+    before = e.path.read_bytes()
     subprocess.run([*editor.split(), str(e.path)])
-    index.run(e.account, "reindex", f"id:{e.msgid}", check=False)
+    _changed(e, before)
+
+
+def replace(e: Entry, raw: str) -> Entry:
+    """New text for a draft, without an editor: same file, same id; tags kept
+except an approval, if the text changed.
+    A Message-ID in the new text must be the draft's — another one is another
+    message, refused; none means the draft's is kept."""
+    a = e.account
+    seal.require_open(a)
+    head, _ = mml.split(raw)
+    headers = mml.parse_headers(head) if head.strip() else []
+    given = next((v for k, v in headers if k.lower() == "message-id"), None)
+    if given is None:
+        raw = mml.set_header(raw, "Message-ID", f"<{e.msgid}>")
+    elif _bare(given) != e.msgid:
+        raise MailkitError(f"Message-ID {given} is not this draft's (<{e.msgid}>) — "
+                           "a different message is `mailkit draft new`")
+    raw, _ = prepare(a, raw)
+    # Write beside it and rename over it: a reader sees the old text or the new.
+    before = e.path.read_bytes()
+    tmp = a.outbox / "tmp" / _unique()
+    with open(tmp, "wb") as f:
+        f.write(raw.encode("utf-8"))
+        f.flush()
+        os.fsync(f.fileno())
+    os.rename(tmp, e.path)
+    _changed(e, before)
+    return Entry(a, e.path, e.msgid, tags_of(a, e.msgid), _headers(e.path))

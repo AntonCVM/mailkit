@@ -87,6 +87,8 @@ def cmd_status(args) -> int:
     for a in inst.accounts.values():
         st = seal.state(a)
         drafts = len(outbox.entries(a)) if st in (seal.OPEN, seal.PLAIN) else None
+        if drafts is not None:
+            _warn_dateless(a)
         size = seal.du(a.cipher_dir if a.seal else a.mountpoint) if st != seal.UNINIT else "-"
         rows.append({"account": a.handle, "address": a.address, "state": st, "size": size,
                      "drafts": drafts, "keyring": a.keyring, "store": str(a.mountpoint)})
@@ -130,7 +132,15 @@ def cmd_index(args) -> int:
         seal.require_open(a)
         index.update(a)
         print(f"{a.handle}: indexed")
+        _warn_dateless(a)
     return 0
+
+
+def _warn_dateless(a) -> None:
+    n = index.dateless(a)
+    if n:
+        log(f"{a.handle}: {n} message(s) outside the outbox dated 1970 — indexed from a dateless "
+            f"draft and never reindexed? Fix: mailkit nm {a.handle} reindex '{index.DATELESS}'")
 
 
 def cmd_init(args) -> int:
@@ -207,6 +217,10 @@ def cmd_draft(args) -> int:
             closed = [a.handle for a in inst.select(args.account or "all") if not seal.is_open(a)]
             if closed:
                 log(f"(closed, not listed: {', '.join(closed)})")
+    elif act == "replace":
+        e = outbox.find(inst, args.ref)
+        raw = sys.stdin.read() if args.file in (None, "-") else open(args.file, encoding="utf-8").read()
+        _print_entry(outbox.replace(e, raw), "replaced")
     elif act in ("show", "path", "edit"):
         e = outbox.find(inst, args.ref)
         if act == "path":
@@ -356,9 +370,12 @@ def build_parser() -> argparse.ArgumentParser:
     d.add_argument("account", nargs="?", help="account handle or 'all' (default: all)")
     d.add_argument("--json", action="store_true", help="machine-readable output")
     for name, help_ in (("show", "print a draft"), ("path", "print a draft's file path"),
-                        ("edit", "open a draft in $VISUAL/$EDITOR, reindex after")):
+                        ("edit", "open a draft in $VISUAL/$EDITOR, reindex after (changed → back to review)")):
         d = dadd(name, help_)
         d.add_argument("ref", help="Message-ID or path")
+    d = dadd("replace", "replace a draft's text from a file or stdin (same id, reindexed, back to review)")
+    d.add_argument("ref", help="Message-ID or path")
+    d.add_argument("file", nargs="?", help="MML file, or - / nothing for stdin")
     for name, help_ in (("approve", "mark draft(s) approved for `send --approved`"),
                         ("unapprove", "back to review"), ("discard", "delete draft(s)")):
         d = dadd(name, help_)

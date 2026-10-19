@@ -24,11 +24,19 @@ mailkit draft reply admin 'id:<msgid>' --all
 mailkit draft forward admin 'id:<msgid>'
 mailkit draft list                           # the open accounts' outboxes
 mailkit draft show <id> ; mailkit draft edit <id>
+mailkit draft replace <id> < nuevo.mml       # new text, no editor: same id and tags
 mailkit send <id> [<id>…]                    # send_policy = direct
 mailkit draft approve <id>…                  # review: mark the good ones
 mailkit send --approved [admin|all]          # then send exactly those
 mailkit send --dry-run <id>                  # the MIME that would go out
 ```
+
+Change a draft with `draft edit` or `draft replace`, not by rewriting the file
+from `draft path`: notmuch keeps the headers it first indexed (subject,
+recipients) until the message is reindexed, and these two reindex for you.
+`replace` keeps the draft's Message-ID — text with a different one is refused.
+An approval is of a text: if `edit` or `replace` changes the draft, `approved`
+goes back to `review` (saving without changes keeps it).
 
 Every draft is checked before anything leaves: an unfilled `{{PLACEHOLDER}}`, a
 missing or relative attachment path, a From that is not the account, no
