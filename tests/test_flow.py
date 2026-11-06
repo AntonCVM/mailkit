@@ -309,12 +309,61 @@ folders = {{ inbox = "INBOX", sent = "INBOX.Sent Items" }}
         self.assertEqual(rc, 1)
         self.assertIn("wrong account", err)
 
+    def test_approve_all_and_draft_completion(self):
+        import json
+        self.assertEqual(run("init", "admin")[0], 0)
+        ids = []
+        for subj in ("One", "Two", "Three"):
+            rc, out, err = run("draft", "new", "admin", stdin=f"To: c@example.com\nSubject: {subj}\n\nhi\n")
+            self.assertEqual(rc, 0, err)
+            ids.append(out.split("id:")[1].split()[0])
+        run("draft", "approve", ids[0])
+        # Completion: id:<msgid>, tab, account + state + subject; filters by approval.
+        rc, out, _ = run("__drafts")
+        self.assertEqual(rc, 0)
+        self.assertEqual([ln.split("\t")[0] for ln in out.splitlines()], [f"id:{i}" for i in ids])
+        self.assertIn("\tadmin review Two", out)
+        self.assertEqual(run("__drafts", "--unapproved")[1].count("id:"), 2)
+        self.assertEqual(run("__drafts", "--approved")[1].split("\t")[0], f"id:{ids[0]}")
+        # --all approves the rest, says which, and refuses to mix with ids.
+        self.assertEqual(run("draft", "approve", "--all", ids[1])[0], 1)
+        self.assertEqual(run("draft", "approve")[0], 1)
+        rc, out, err = run("draft", "approve", "--all")
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out.split(), ["approved", "admin", f"id:{ids[1]}", "approved", "admin", f"id:{ids[2]}"])
+        listed = json.loads(run("draft", "list", "--json")[1])
+        self.assertTrue(all("approved" in d["tags"] and "review" not in d["tags"] for d in listed))
+        self.assertEqual(run("draft", "approve", "--all", "admin")[1].strip(), "nothing to approve")
+
+    def test_message_completion_for_reply(self):
+        self.assertEqual(run("init", "admin")[0], 0)
+        box = self.tmp / "Mail" / "admin" / "mail" / "INBOX" / "cur"
+        box.mkdir(parents=True)
+        for n, frm, day, subj in ((1, "Juan Pérez <juan@x.org>", 2, "Factura marzo"),
+                                  (2, "María López <maria@y.org>", 4, "Reunión lunes")):
+            (box / f"{n}.A:2,S").write_text(f"Message-ID: <m{n}@x>\nFrom: {frm}\n"
+                                            f"Date: {day:02d} Nov 2026 10:00:00 +0000\nSubject: {subj}\n\nx\n")
+        run("index", "admin")
+        run("draft", "new", "admin", stdin="To: c@example.com\nSubject: Borrador\n\nhi\n")
+        # Newest first, drafts left out, sender and subject in the description.
+        rc, out, _ = run("__messages", "admin")
+        self.assertEqual(rc, 0)
+        self.assertEqual(out.splitlines(), ["id:m2@x\t2026-11-04 María López · Reunión lunes",
+                                            "id:m1@x\t2026-11-02 Juan Pérez · Factura marzo"])
+        # A notmuch query searches; the token stays in the description for fish's filter.
+        out = run("__messages", "admin", "from:juan")[1]
+        self.assertEqual(out.splitlines(), ["id:m1@x\t2026-11-02 Juan Pérez · Factura marzo  [from:juan]"])
+        os.environ["MAILKIT_COMPLETE_LIMIT"] = "1"
+        self.assertEqual(run("__messages", "admin")[1].count("id:"), 1)
+        self.assertEqual(run("__messages", "nobody"), (0, "", ""))
+
     def test_help_touches_nothing(self):
         os.environ["MAILKIT_CONFIG"] = str(self.tmp / "missing.toml")
         for argv in (["--help"], ["draft", "--help"], ["send", "--help"], ["__commands"]):
             rc, out, _ = run(*argv)
             self.assertEqual(rc, 0, argv)
             self.assertTrue(out)
+        self.assertEqual(run("__drafts"), (0, "", ""))  # no config: silent, for completion
 
 
 

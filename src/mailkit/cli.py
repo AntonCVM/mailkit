@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import signal
 import sys
 
@@ -178,8 +179,6 @@ def cmd_keyrings(args) -> int:
 
 
 def cmd_nm(args) -> int:
-    import os
-
     a = _inst().account(args.account)
     seal.require_open(a)
     index.ensure(a)
@@ -231,8 +230,23 @@ def cmd_draft(args) -> int:
             print(f"# {e.account.handle} id:{e.msgid} [{' '.join(e.tags)}]")
             sys.stdout.write(e.path.read_text(encoding="utf-8"))
     elif act in ("approve", "unapprove", "discard"):
-        for ref in args.refs:
-            e = outbox.find(inst, ref)
+        if act == "approve" and args.all is not None:
+            if args.refs:
+                raise MailkitError("draft approve: either ids or --all, not both")
+            accts = [a for a in inst.select(args.all) if seal.is_open(a)]
+            todo = [e for a in accts for e in outbox.entries(a) if "approved" not in e.tags]
+            closed = [a.handle for a in inst.select(args.all) if not seal.is_open(a)]
+            if closed:
+                log(f"(closed, not approved: {', '.join(closed)})")
+            if not todo:
+                print("nothing to approve")
+                return 0
+        elif not args.refs:
+            raise MailkitError(f"draft {act}: which draft? (ids or paths"
+                               + (", or --all [account]" if act == "approve" else "") + ")")
+        else:
+            todo = [outbox.find(inst, ref) for ref in args.refs]
+        for e in todo:
             if act == "approve":
                 outbox.tag(e, "+approved", "-review")
             elif act == "unapprove":
@@ -379,7 +393,10 @@ def build_parser() -> argparse.ArgumentParser:
     for name, help_ in (("approve", "mark draft(s) approved for `send --approved`"),
                         ("unapprove", "back to review"), ("discard", "delete draft(s)")):
         d = dadd(name, help_)
-        d.add_argument("refs", nargs="+", help="Message-IDs or paths")
+        d.add_argument("refs", nargs="*", help="Message-IDs or paths")
+        if name == "approve":
+            d.add_argument("--all", metavar="ACCOUNT", nargs="?", const="all",
+                           help="approve every draft of ACCOUNT's outbox (default: all open accounts)")
 
     s = add("send", cmd_send, "send draft(s): SMTP, copy to Sent, out of the outbox",
             "Sends the named drafts, or every approved one. All are checked first\n"
@@ -405,6 +422,38 @@ def main(argv: list[str] | None = None) -> int:
         try:
             print("\n".join(load().accounts))
         except ConfigError:
+            pass
+        return 0
+    if argv[:1] == ["__drafts"]:
+        # `id:<msgid>\t<account> <flag> <subject>` for fish; --approved/--unapproved filter.
+        want = argv[1] if len(argv) > 1 else None
+        try:
+            for a in load().accounts.values():
+                if not seal.is_open(a):
+                    continue
+                for e in outbox.entries(a):
+                    ok = "approved" in e.tags
+                    if want == "--approved" and not ok or want == "--unapproved" and ok:
+                        continue
+                    subj = " ".join(e.headers.get("subject", "").split())[:50]
+                    print(f"id:{e.msgid}\t{a.handle} {'approved' if ok else 'review'} {subj}")
+        except (ConfigError, MailkitError, OSError):
+            pass
+        return 0
+    if argv[:1] == ["__messages"]:
+        # `id:<msgid>\t<date> <from> · <subject>` of an open account, for reply/forward.
+        # A token with a notmuch prefix (from:, subject:, tag:, date:…) is a query over
+        # the whole index; anything else is filtered by fish among the newest.
+        # The query rides in the description: fish drops what does not contain the token.
+        tok = argv[2].strip("'\"") if len(argv) > 2 else ""
+        query = tok if ":" in tok and not tok.startswith("id:") else ""
+        try:
+            limit = int(os.environ.get("MAILKIT_COMPLETE_LIMIT") or 40)
+            a = load().account(argv[1]) if len(argv) > 1 else None
+            if a and seal.is_open(a):
+                for mid, date, frm, subj in index.recent(a, query, limit):
+                    print(f"id:{mid}\t{date} {frm[:24]} · {subj[:50]}" + (f"  [{tok}]" if query else ""))
+        except (ConfigError, MailkitError, OSError, ValueError):
             pass
         return 0
     args = p.parse_args(argv)

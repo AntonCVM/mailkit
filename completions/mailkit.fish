@@ -1,5 +1,6 @@
-# mailkit — subcommands from `mailkit __commands`, accounts from `mailkit __accounts`
-# (the instance in $MAILKIT_CONFIG, so a project's .envrc changes what completes).
+# mailkit — subcommands from `mailkit __commands`, accounts from `mailkit __accounts`,
+# draft ids from `mailkit __drafts`, messages from `mailkit __messages` (the instance in $MAILKIT_CONFIG, so a project's
+# .envrc changes what completes; only open accounts have drafts to offer).
 complete -c mailkit -f
 complete -c mailkit -s h -l help -d Help
 
@@ -48,8 +49,18 @@ complete -c mailkit -n '__fish_seen_subcommand_from draft; and __fish_seen_subco
 complete -c mailkit -n '__fish_seen_subcommand_from draft; and __fish_seen_subcommand_from new' -F
 complete -c mailkit -n '__fish_seen_subcommand_from draft; and __fish_seen_subcommand_from replace; and test (__mailkit_nargs) -eq 4' -F
 complete -c mailkit -n '__fish_seen_subcommand_from draft; and __fish_seen_subcommand_from reply' -l all -d 'Reply to all'
+# reply/forward: the newest messages (MAILKIT_COMPLETE_LIMIT, default 40); type part of
+# a sender or subject to narrow them, or a notmuch query (from:juan) to search all.
+complete -c mailkit -n '__fish_seen_subcommand_from draft; and __fish_seen_subcommand_from reply forward; and test (__mailkit_nargs) -eq 4' -k -a '(mailkit __messages (commandline -opc)[4] (commandline -ct))'
+# draft ids: one for show/path/edit/replace, any number for approve/unapprove/discard
+complete -c mailkit -n '__fish_seen_subcommand_from draft; and __fish_seen_subcommand_from show path edit replace; and test (__mailkit_nargs) -eq 3' -a '(mailkit __drafts)'
+complete -c mailkit -n '__fish_seen_subcommand_from draft; and __fish_seen_subcommand_from approve' -a '(mailkit __drafts --unapproved)'
+complete -c mailkit -n '__fish_seen_subcommand_from draft; and __fish_seen_subcommand_from unapprove' -a '(mailkit __drafts --approved)'
+complete -c mailkit -n '__fish_seen_subcommand_from draft; and __fish_seen_subcommand_from discard' -a '(mailkit __drafts)'
+complete -c mailkit -n '__fish_seen_subcommand_from draft; and __fish_seen_subcommand_from approve' -l all -d 'Approve every draft of an account (default: all)' -a '(mailkit __accounts) all'
 complete -c mailkit -n '__fish_seen_subcommand_from draft; and __fish_seen_subcommand_from list' -l json -d 'JSON output'
 
 complete -c mailkit -n '__fish_seen_subcommand_from send' -l approved -d 'Send every approved draft' -a '(mailkit __accounts) all'
+complete -c mailkit -n '__fish_seen_subcommand_from send; and not __fish_seen_argument -l approved' -a '(mailkit __drafts)'
 complete -c mailkit -n '__fish_seen_subcommand_from send' -l dry-run -d 'Print, send nothing'
 complete -c mailkit -n '__fish_seen_subcommand_from keyrings' -l check -d 'Exit 0 only if the keyrings are unlocked'

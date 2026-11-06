@@ -27,9 +27,17 @@ mailkit draft show <id> ; mailkit draft edit <id>
 mailkit draft replace <id> < nuevo.mml       # new text, no editor: same id and tags
 mailkit send <id> [<id>…]                    # send_policy = direct
 mailkit draft approve <id>…                  # review: mark the good ones
+mailkit draft approve --all [admin|all]      # or every draft still in review
 mailkit send --approved [admin|all]          # then send exactly those
 mailkit send --dry-run <id>                  # the MIME that would go out
 ```
+
+In fish, Tab completes ids: drafts for `show`/`edit`/`approve`/`send`… (only the
+unapproved ones for `approve`), and messages for `reply`/`forward` — the newest 40
+(`MAILKIT_COMPLETE_LIMIT`), described by date, sender and subject. Type part of a
+sender or subject to narrow them (`juan<Tab>`), or a notmuch query to search the
+whole index (`from:juan<Tab>`, `subject:factura<Tab>`; whole words — fish takes
+`*` as a file glob). Only open accounts complete; nothing is opened for it.
 
 Change a draft with `draft edit` or `draft replace`, not by rewriting the file
 from `draft path`: notmuch keeps the headers it first indexed (subject,

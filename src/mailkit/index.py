@@ -11,8 +11,11 @@ They hold paths, never secrets, and are rewritten from the TOML on every run.
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
+import time
+from email.utils import parseaddr
 from pathlib import Path
 
 from .config import Account
@@ -153,3 +156,33 @@ DATELESS = 'date:@0..@31535999 and path:"sent/**"'
 
 def dateless(a: Account) -> int:
     return int(run(a, "count", DATELESS).strip() or 0)
+
+
+def recent(a: Account, query: str = "", limit: int = 40) -> list[tuple[str, str, str, str]]:
+    """(msgid, date, from, subject) of the newest messages matching `query`
+    (default: everything), drafts left out — what reply/forward pick from."""
+    q = f"({query}) and not tag:draft" if query else "not tag:draft"
+    ids = [i.removeprefix("id:") for i in run(a, "search", "--output=messages", "--sort=newest-first",
+                                              f"--limit={limit}", q).split("\n") if i]
+    if not ids:
+        return []
+    shown = run(a, "show", "--format=json", "--body=false", "--entire-thread=false",
+                " or ".join('id:"' + i.replace('"', '""') + '"' for i in ids))
+    msgs: dict[str, dict] = {}
+
+    def walk(node):  # threads → [message, replies] pairs, nested
+        if isinstance(node, dict):
+            msgs[node.get("id", "")] = node
+        elif isinstance(node, list):
+            for n in node:
+                walk(n)
+
+    walk(json.loads(shown or "[]"))
+    rows = []
+    for i in ids:
+        m = msgs.get(i, {})
+        h = m.get("headers", {})
+        name, addr = parseaddr(h.get("From", ""))
+        date = time.strftime("%Y-%m-%d", time.localtime(m.get("timestamp", 0)))
+        rows.append((i, date, name or addr, " ".join(h.get("Subject", "").split())))
+    return rows
