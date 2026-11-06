@@ -57,6 +57,7 @@ complete -c mailkit -n '__fish_seen_subcommand_from draft; and __fish_seen_subco
 complete -c mailkit -n '__fish_seen_subcommand_from draft; and __fish_seen_subcommand_from approve' -a '(mailkit __drafts --unapproved)'
 complete -c mailkit -n '__fish_seen_subcommand_from draft; and __fish_seen_subcommand_from unapprove' -a '(mailkit __drafts --approved)'
 complete -c mailkit -n '__fish_seen_subcommand_from draft; and __fish_seen_subcommand_from discard' -a '(mailkit __drafts)'
+complete -c mailkit -n '__fish_seen_subcommand_from draft; and __fish_seen_subcommand_from approve' -l last -d 'The draft last shown, if unchanged'
 complete -c mailkit -n '__fish_seen_subcommand_from draft; and __fish_seen_subcommand_from approve' -l all -d 'Approve every draft of an account (default: all)' -a '(mailkit __accounts) all'
 complete -c mailkit -n '__fish_seen_subcommand_from draft; and __fish_seen_subcommand_from list' -l json -d 'JSON output'
 

@@ -15,6 +15,7 @@ keyring can send mail without mailkit. Locking KeePassXC is the lock.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import socket
 import subprocess
@@ -27,7 +28,7 @@ from pathlib import Path
 
 from . import index, mml, seal
 from .config import Account, Instance
-from .util import MailkitError, log
+from .util import MailkitError, log, runtime_dir, write_private
 
 _seq = 0
 
@@ -245,3 +246,26 @@ except an approval, if the text changed.
     os.rename(tmp, e.path)
     _changed(e, before)
     return Entry(a, e.path, e.msgid, tags_of(a, e.msgid), _headers(e.path))
+
+
+# `draft show` remembers what it printed, so `draft approve --last` approves
+# exactly that: the id and a hash of the text, in the runtime dir (tmpfs, 0600,
+# gone at logout). A draft changed since it was shown is not what was read.
+def _shown_file(inst: Instance) -> Path:
+    return runtime_dir(inst.name) / "last-shown"
+
+
+def remember_shown(e: Entry, text: bytes) -> None:
+    write_private(_shown_file(e.account.instance),
+                  f"{e.msgid}\n{hashlib.sha256(text).hexdigest()}\n")
+
+
+def last_shown(inst: Instance) -> Entry:
+    try:
+        msgid, digest = _shown_file(inst).read_text().split()
+    except (OSError, ValueError):
+        raise MailkitError("no draft shown yet — mailkit draft show <id>") from None
+    e = find(inst, msgid)
+    if hashlib.sha256(e.path.read_bytes()).hexdigest() != digest:
+        raise MailkitError(f"id:{msgid} changed since it was shown — show it again first")
+    return e

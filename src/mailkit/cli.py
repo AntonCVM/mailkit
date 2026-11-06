@@ -227,10 +227,16 @@ def cmd_draft(args) -> int:
         elif act == "edit":
             outbox.edit(e)
         else:
+            text = e.path.read_bytes()
             print(f"# {e.account.handle} id:{e.msgid} [{' '.join(e.tags)}]")
-            sys.stdout.write(e.path.read_text(encoding="utf-8"))
+            sys.stdout.write(text.decode("utf-8"))
+            outbox.remember_shown(e, text)
     elif act in ("approve", "unapprove", "discard"):
-        if act == "approve" and args.all is not None:
+        if act == "approve" and args.last:
+            if args.refs or args.all is not None:
+                raise MailkitError("draft approve: --last alone, without ids or --all")
+            todo = [outbox.last_shown(inst)]
+        elif act == "approve" and args.all is not None:
             if args.refs:
                 raise MailkitError("draft approve: either ids or --all, not both")
             accts = [a for a in inst.select(args.all) if seal.is_open(a)]
@@ -243,7 +249,7 @@ def cmd_draft(args) -> int:
                 return 0
         elif not args.refs:
             raise MailkitError(f"draft {act}: which draft? (ids or paths"
-                               + (", or --all [account]" if act == "approve" else "") + ")")
+                               + (", --all [account] or --last" if act == "approve" else "") + ")")
         else:
             todo = [outbox.find(inst, ref) for ref in args.refs]
         for e in todo:
@@ -397,6 +403,8 @@ def build_parser() -> argparse.ArgumentParser:
         if name == "approve":
             d.add_argument("--all", metavar="ACCOUNT", nargs="?", const="all",
                            help="approve every draft of ACCOUNT's outbox (default: all open accounts)")
+            d.add_argument("--last", action="store_true",
+                           help="approve the draft last printed by `draft show`, if unchanged since")
 
     s = add("send", cmd_send, "send draft(s): SMTP, copy to Sent, out of the outbox",
             "Sends the named drafts, or every approved one. All are checked first\n"

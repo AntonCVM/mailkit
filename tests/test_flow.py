@@ -335,6 +335,31 @@ folders = {{ inbox = "INBOX", sent = "INBOX.Sent Items" }}
         self.assertTrue(all("approved" in d["tags"] and "review" not in d["tags"] for d in listed))
         self.assertEqual(run("draft", "approve", "--all", "admin")[1].strip(), "nothing to approve")
 
+    def test_approve_last_shown(self):
+        import json
+        self.assertEqual(run("init", "admin")[0], 0)
+        rc, _, err = run("draft", "approve", "--last")
+        self.assertEqual(rc, 1)
+        self.assertIn("no draft shown", err)
+        ids = []
+        for subj in ("One", "Two"):
+            out = run("draft", "new", "admin", stdin=f"To: c@example.com\nSubject: {subj}\n\nhi\n")[1]
+            ids.append(out.split("id:")[1].split()[0])
+        run("draft", "show", ids[0])
+        rc, out, err = run("draft", "approve", "--last")
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out.split(), ["approved", "admin", f"id:{ids[0]}"])
+        tags = {d["id"]: d["tags"] for d in json.loads(run("draft", "list", "--json")[1])}
+        self.assertIn("approved", tags[ids[0]])
+        self.assertNotIn("approved", tags[ids[1]])
+        # Changed after it was shown: not what was read, refused.
+        run("draft", "show", ids[1])
+        run("draft", "replace", ids[1], stdin="To: c@example.com\nSubject: Other\n\nbye\n")
+        rc, _, err = run("draft", "approve", "--last")
+        self.assertEqual(rc, 1)
+        self.assertIn("changed since", err)
+        self.assertEqual(run("draft", "approve", "--last", ids[1])[0], 1)
+
     def test_message_completion_for_reply(self):
         self.assertEqual(run("init", "admin")[0], 0)
         box = self.tmp / "Mail" / "admin" / "mail" / "INBOX" / "cur"

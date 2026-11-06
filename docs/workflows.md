@@ -28,6 +28,7 @@ mailkit draft replace <id> < nuevo.mml       # new text, no editor: same id and 
 mailkit send <id> [<id>…]                    # send_policy = direct
 mailkit draft approve <id>…                  # review: mark the good ones
 mailkit draft approve --all [admin|all]      # or every draft still in review
+mailkit draft approve --last                 # or the one `draft show` just printed
 mailkit send --approved [admin|all]          # then send exactly those
 mailkit send --dry-run <id>                  # the MIME that would go out
 ```
@@ -44,7 +45,8 @@ from `draft path`: notmuch keeps the headers it first indexed (subject,
 recipients) until the message is reindexed, and these two reindex for you.
 `replace` keeps the draft's Message-ID — text with a different one is refused.
 An approval is of a text: if `edit` or `replace` changes the draft, `approved`
-goes back to `review` (saving without changes keeps it).
+goes back to `review` (saving without changes keeps it). For the same reason
+`approve --last` refuses a draft whose text changed after `draft show` printed it.
 
 Every draft is checked before anything leaves: an unfilled `{{PLACEHOLDER}}`, a
 missing or relative attachment path, a From that is not the account, no
