@@ -77,6 +77,81 @@ Body text.
 <#!part …>   ← the literal text <#part …>
 ```
 
+## Agents processing mail: `mailkit agent`
+
+For an agent that goes through the mail every day and must not miss anything.
+`unread` is no use for that: it is the person's, mirrored from the server, and
+reading from the mirror rightly changes nothing. So an agent has a state of its
+own, per message:
+
+```
+pending ── agent next / read ──▶ seen ── agent done ──▶ done
+   ▲                                                    │
+   └──────────────────── agent unsee ◀──────────────────┘
+```
+
+- **Marking is part of reading.** `next` and `read` mark seen the new mail they
+  print, right after printing it; nothing to remember afterwards. `show` prints
+  the same and marks nothing: old mail as context. `pending` lists and marks nothing.
+- **What counts as processed** is `[agent] pending`: `"unseen"` — shown once is
+  enough — or `"undone"`, pending until `agent done` (for flows where an agent may
+  be shown a message and not deal with it; `done` refuses a message never shown).
+- **Cutoff.** `[agent] since = "YYYY-MM-DD"`: older mail is never pending. Until
+  it is set, `pending` and `next` refuse.
+- **What is pending:** received since the cutoff, in an open account — spam
+  included (bounces and notices land there; `--spam exclude|only` to split it),
+  trash, drafts and our own mail not; `[agent] ignore` queries left out (still
+  readable with `show` and `nm`).
+- **A Message-ID is one message** across the instance: in two accounts it is
+  listed once, with both, and marked in both.
+- **Answered?** `pending` and `read` say when something of ours is later than the
+  last received message: in the same thread (`how: thread`), or to that sender
+  from any open account (`how: sender`). A closed account is not looked at.
+- **Whole threads.** `read`/`show`/`next` print the whole thread, oldest first,
+  ours from Sent included, each message labelled `new` (marked now), `seen`,
+  `done`, `ours` or `context` (before the cutoff, ignored). Attachments are listed
+  (part, name, type, size); an empty text part is replaced by the HTML as text —
+  nothing rendered, nothing fetched. Bodies over 12000 characters are cut with a
+  marker (`--full`, `--max-body N`).
+- **Persistence.** The truth is the ledger, `<store>/agent/log.jsonl`, inside the
+  seal: id, operation, time. The `agent-seen`/`agent-done` tags are its copy in the
+  index (`mailkit nm <acct> search tag:agent-seen`); after a rebuilt index,
+  `mailkit agent restore` re-tags. `agent log` shows what was marked and when.
+- Nothing touches the server, `unread` or any IMAP flag.
+
+```sh
+mailkit agent pending [acct] [--json]    # what is left: one line per thread, oldest first
+mailkit agent next -n 5 [--json]         # the next 5 threads, whole; marks them seen
+mailkit agent read id:<msgid>…           # those threads; marks their new mail seen
+mailkit agent show id:<msgid>…           # the same, marks nothing
+mailkit agent done [--thread] id:<msgid>…   # with pending = "undone"
+mailkit agent unsee --last               # a sweep cut short: its last batch back to pending
+mailkit agent unsee --since 2026-11-18T09:00 | id:<msgid>…
+mailkit agent attach id:<msgid> <part|name> <file|dir>   # needs [agent] extract = true
+mailkit agent log [-n 50] [--json] ; mailkit agent restore [acct]
+```
+
+A long backlog goes in parts: `pending` first (one line each), then `next -n N`
+or `read` thread by thread. Don't pipe `next`/`read` through `head`: what was
+printed is marked, whether or not the reader got to it — `show` is for peeking.
+
+**For scripts:** `--json` on `pending`, `next`, `read`, `show` is one document
+with `"schema": 1`, which changes only incompatibly. A project-specific step
+(case numbers, deadlines) reads it instead of mailkit growing hooks:
+
+```sh
+mailkit agent pending --json | jq -r '.threads[] | select(.answered == null) | .ref'
+mailkit agent show --json id:<msgid> | jq -r '.threads[].messages[].body' | rg -o 'KD/[0-9]+'
+```
+
+`pending` → `threads[]`: `ref`, `account`, `accounts`, `thread`, `subject`, `from`,
+`first`, `last`, `messages`, `pending[]` (`id`, `state`), `spam`, `answered`
+(`null` or `how`, `account`, `id`, `date`). `next`/`read`/`show` → `marks` (the ids
+marked after the output) and `threads[]`: `ref`, `account`, `accounts`, `thread`,
+`subject`, `answered`, `messages[]` (`id`, `state`, `pending`, `accounts`, `date`,
+`from`, `to`, `cc`, `subject`, `tags`, `spam`, `body_from`, `body`, `attachments[]`
+with `part`, `filename`, `type`, `size`).
+
 ## Scheduled flows
 
 A flow is `mailkit sync <acct>` followed by whatever reads the index: `mailkit nm

@@ -17,6 +17,8 @@ HANDLE_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 TLS_MODES = ("tls", "starttls", "none")
 SEND_POLICIES = ("direct", "approved")
 SECRET_BACKENDS = ("secret-service", "command")
+AGENT_PENDING = ("unseen", "undone")
+DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 LOCALHOSTS = ("localhost", "127.0.0.1", "::1")
 
 
@@ -40,6 +42,21 @@ class Folders:
     drafts: str | None = None
     trash: str | None = None
     spam: str | None = None
+
+
+@dataclass(frozen=True)
+class AgentPolicy:
+    """`[agent]`: what `mailkit agent` counts as pending, for the whole instance."""
+
+    # YYYY-MM-DD: older mail is never pending (still readable). "all": no cutoff.
+    # None: not decided yet, and `agent pending/next` refuse to guess.
+    since: str | None = None
+    # unseen: shown to an agent once = processed. undone: until `agent done`.
+    pending: str = "unseen"
+    # notmuch queries left out of pending (noise); still searchable and readable.
+    ignore: tuple[str, ...] = ()
+    # Whether `agent attach` may write an attachment to disk.
+    extract: bool = False
 
 
 @dataclass(frozen=True)
@@ -84,6 +101,12 @@ class Account:
         return self.mountpoint / "sent"
 
     @property
+    def agent_log(self) -> Path:
+        """The agent ledger: what was marked seen/done and when, append-only.
+        The truth behind the agent-* tags, so a rebuilt index loses nothing."""
+        return self.mountpoint / "agent" / "log.jsonl"
+
+    @property
     def profile(self) -> str:
         # aerc reads the notmuch profile out of `notmuch://<profile>` with
         # url.Hostname(): letters, digits, '-' and '.' only, so no '@' or '_'.
@@ -111,6 +134,7 @@ class Instance:
     secret_command: str | None
     config_path: Path
     accounts: dict[str, Account] = field(default_factory=dict)
+    agent: AgentPolicy = field(default_factory=AgentPolicy)
 
     def account(self, handle: str) -> Account:
         try:
@@ -164,6 +188,24 @@ def _merge(defaults: dict, own: dict) -> dict:
     return out
 
 
+def _agent(raw: dict) -> AgentPolicy:
+    unknown = set(raw) - {"since", "pending", "ignore", "extract"}
+    if unknown:
+        raise ConfigError(f"[agent]: unknown keys {sorted(unknown)}")
+    since = raw.get("since")
+    if since is not None:
+        since = str(since)  # a bare TOML date arrives as datetime.date
+        if since != "all" and not DATE_RE.match(since):
+            raise ConfigError(f"agent.since is YYYY-MM-DD or \"all\", got '{since}'")
+    pending = raw.get("pending", "unseen")
+    if pending not in AGENT_PENDING:
+        raise ConfigError(f"agent.pending is one of {AGENT_PENDING}, got '{pending}'")
+    ignore = raw.get("ignore", [])
+    if not isinstance(ignore, list) or not all(isinstance(q, str) and q.strip() for q in ignore):
+        raise ConfigError("agent.ignore is a list of notmuch queries")
+    return AgentPolicy(since, pending, tuple(ignore), bool(raw.get("extract", False)))
+
+
 def load(path: Path | None = None) -> Instance:
     path = path or config_path()
     try:
@@ -192,7 +234,7 @@ def load(path: Path | None = None) -> Instance:
     if backend == "command" and not command:
         raise ConfigError("secrets.backend = 'command' needs secrets.command")
 
-    inst = Instance(name, root, policy, backend, command, path)
+    inst = Instance(name, root, policy, backend, command, path, agent=_agent(data.get("agent", {})))
     defaults = data.get("defaults", {})
     accounts = data.get("accounts", {})
     if not accounts:

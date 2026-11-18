@@ -18,6 +18,7 @@ Terminal mail with a sealed local mirror per account. User docs: `README.md`,
 | `outbox.py` | the draft queue (Maildir + tags) |
 | `send.py` | SMTP + the IMAP copy to Sent |
 | `aerc.py` | the generated accounts.conf |
+| `agent.py` | the agent ledger (seen/done), pending, thread views, attachments |
 | `cli.py` | argparse; verbs only call the modules above |
 
 External tools (mbsync, notmuch, gocryptfs, secret-tool, busctl, aerc) are called

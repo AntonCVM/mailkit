@@ -10,8 +10,9 @@ import json
 import os
 import signal
 import sys
+from datetime import datetime
 
-from . import aerc, index, mirror, outbox, seal, secrets, send
+from . import aerc, agent, index, mirror, outbox, seal, secrets, send
 from .config import ConfigError, Instance, load
 from .util import MailkitError, log
 
@@ -33,6 +34,32 @@ typical session:
   mailkit draft new <acct> < message.mml
   mailkit send <id>         or: mailkit draft approve <id>; mailkit send --approved all
   mailkit close             unmount, verified
+
+agents processing mail (state of their own, apart from unread):
+  mailkit agent --help      pending, next, read, show, done, unsee…
+"""
+
+
+AGENT_HELP = """\
+For an agent that processes the mail every day and must not miss any. Its own
+state per message, in a ledger inside each store — not `unread`, which is the
+person's, and nothing on the server:
+
+  pending ─ next/read ─▶ seen ─ done ─▶ done        unsee: back to pending
+
+`next` and `read` mark seen what they print; `show` marks nothing. What counts
+as processed is [agent] pending in the TOML: "unseen" (shown once is enough) or
+"undone" (until `agent done`). Older than [agent] since is never pending.
+
+the daily sweep:
+  mailkit agent pending              what is left, one line per thread
+  mailkit agent next -n 5            the next 5 threads, whole; marks them seen
+  mailkit agent read id:<msgid>      one thread; marks its new mail seen
+  mailkit agent show id:<msgid>      the same as context; marks nothing
+  mailkit agent unsee --last         a sweep cut short: back to pending
+  mailkit agent attach id:<msgid> 2 /tmp/out/
+
+Add --json for a stable document (schema 1): what scripts should parse.
 """
 
 
@@ -286,6 +313,155 @@ def cmd_send(args) -> int:
     return send.send_many(entries, dry_run=args.dry_run)
 
 
+def _agent_accounts(inst, sel):
+    accts = inst.select(sel or "all")
+    closed = [a.handle for a in accts if not seal.is_open(a)]
+    if closed:
+        log(f"(closed, not looked at: {', '.join(closed)})")
+    if not any(seal.is_open(a) for a in accts):
+        raise MailkitError("nothing is open — mailkit open <account|all>")
+    return accts
+
+
+def _emit_threads(inst, views, args, mark: bool) -> int:
+    """Print the threads, then (read/next) mark what was new in them: after the
+    output, so a crash before it leaves them pending."""
+    todo = [i for v in views for i in agent.new_ids(v)] if mark else []
+    if args.json:
+        print(json.dumps({"schema": agent.SCHEMA, "marks": todo, "threads": views},
+                         ensure_ascii=False, indent=2))
+    else:
+        for v in views:
+            sys.stdout.write(agent.render(v))
+    sys.stdout.flush()
+    if not mark:
+        return 0
+    if not todo:
+        log("nothing new in these thread(s): nothing marked")
+        return 0
+    marked = agent.record(inst, "seen", todo)
+    n = len({i for ids in marked.values() for i in ids})
+    log(f"marked seen: {n} message(s) in {len(views)} thread(s) "
+        f"({', '.join(f'{k}: {len(v)}' for k, v in marked.items())}) — undo: mailkit agent unsee --last")
+    return 0 if n == len(set(todo)) else 1
+
+
+def cmd_agent(args) -> int:
+    inst = _inst()
+    act = args.action
+    max_body = None if getattr(args, "full", False) else getattr(args, "max_body", None)
+    if act == "pending":
+        items, info = agent.pending(inst, _agent_accounts(inst, args.account), args.spam)
+        if args.json:
+            print(json.dumps({"schema": agent.SCHEMA, **info, "threads": [it.json() for it in items]},
+                             ensure_ascii=False, indent=2))
+            return 0
+        n = sum(len(it.ids) for it in items)
+        what = "seen by an agent" if info["pending_means"] == "unseen" else "marked done by an agent"
+        print(f"pending since {info['since']} (processed = {what}) · {len(items)} thread(s), {n} message(s)")
+        for it in items:
+            flags = (" [spam]" if it.spam else "") + (
+                f" [answered {it.answered['date'][:10]}: {it.answered['how']}]" if it.answered else "")
+            from_ = " ".join(it.sender.split())
+            print(f"{agent._iso(it.last)[:16].replace('T', ' ')}  {','.join(it.accounts):<16} "
+                  f"{len(it.ids)}/{it.total:<3} {from_[:30]:<30} {it.subject[:50]}{flags}  id:{it.ids[0]}")
+        if info["ignored"]:
+            print(f"({info['ignored']} message(s) left out by [agent] ignore — still readable)")
+        if items:
+            print("next: mailkit agent next [-n N]   or: mailkit agent read id:<…>   (both mark seen)")
+        return 0
+    if act == "next":
+        items, _ = agent.pending(inst, _agent_accounts(inst, args.account), args.spam)
+        # Shown but not done (pending = "undone") is listed by `pending`, not served
+        # again: `next` would otherwise return the same thread until it is done.
+        items = [it for it in items if "new" in it.states.values()]
+        if not items:
+            print("nothing new pending" if inst.agent.pending == "undone" else "nothing pending")
+            return 0
+        views = [agent.thread(inst, f"id:{it.ids[0]}", max_body) for it in items[:args.n]]
+        rc = _emit_threads(inst, views, args, mark=True)
+        left = len(items) - len(views)
+        log(f"pending left: {left} thread(s)" if left else "pending left: none (of what was listed)")
+        return rc
+    if act in ("read", "show"):
+        views, keys = [], set()
+        for ref in args.refs:
+            v = agent.thread(inst, ref, max_body)
+            if (v["account"], v["thread"]) not in keys:
+                keys.add((v["account"], v["thread"]))
+                views.append(v)
+        return _emit_threads(inst, views, args, mark=act == "read")
+    if act == "done":
+        state = agent.ledger(inst)
+        ids = []
+        for ref in args.refs:
+            if args.thread:
+                v = agent.thread(inst, ref)
+                unshown = agent.new_ids(v)
+                if unshown:
+                    log(f"{ref}: {len(unshown)} message(s) never shown — not done (agent read {ref})")
+                ids += [m["id"] for m in v["messages"] if m["state"] == "seen"]
+            else:
+                ids.append(agent.bare(ref))
+        never = [i for i in ids if i not in state]
+        if never:
+            raise MailkitError("never shown to an agent, not marked done (agent read first): "
+                               + ", ".join(f"id:{i}" for i in never))
+        ids = [i for i in ids if not state[i]["done"]]
+        if not ids:
+            print("nothing to mark done")
+            return 0
+        marked = agent.record(inst, "done", ids)
+        for k, v in marked.items():
+            print(f"done {k}: " + " ".join(f"id:{i}" for i in v))
+        return 0
+    if act == "unsee":
+        if sum(map(bool, (args.refs, args.last, args.since))) != 1:
+            raise MailkitError("agent unsee: ids, --last or --since TIME (one of them)")
+        state = agent.ledger(inst)
+        if args.refs:
+            ids = [agent.bare(r) for r in args.refs]
+        elif args.last:
+            seen = [e for e in agent.entries(inst) if e["op"] == "seen" and e["id"] in state]
+            batch = seen[-1].get("batch") if seen else None
+            ids = [e["id"] for e in seen if batch and e.get("batch") == batch]
+        else:
+            try:
+                t = datetime.fromisoformat(args.since).astimezone()
+            except ValueError:
+                raise MailkitError(f"--since: an ISO date or time, got {args.since!r}") from None
+            ids = [k for k, v in state.items() if datetime.fromisoformat(v["seen"]) >= t]
+        ids = [i for i in ids if i in state]
+        if not ids:
+            print("nothing to unsee")
+            return 0
+        marked = agent.record(inst, "unsee", ids)
+        for k, v in marked.items():
+            print(f"pending again {k}: {len(v)} message(s)")
+        return 0
+    if act == "attach":
+        path, n = agent.attach(inst, args.ref, args.part, args.dest)
+        print(f"wrote {n} bytes to {path}")
+        return 0
+    if act == "log":
+        rows = agent.entries(inst, _agent_accounts(inst, args.account))[-args.n:]
+        if args.json:
+            print(json.dumps(rows, ensure_ascii=False, indent=2))
+        else:
+            for e in rows:
+                print(f"{e['at']}  {e['account']:<16} {e['op']:<6} id:{e['id']}")
+        return 0
+    if act == "restore":
+        for a in _agent_accounts(inst, args.account):
+            if not seal.is_open(a):
+                continue
+            n, tagged, missing = agent.restore(a)
+            print(f"{a.handle}: ledger {n} marked · index now tags {tagged} {agent.SEEN}"
+                  + (f" · {missing} not in the index (gone from the mirror?)" if missing else ""))
+        return 0
+    return 0
+
+
 def cmd_config(args) -> int:
     inst = _inst()
     print(f"config       {inst.config_path}")
@@ -299,6 +475,9 @@ def cmd_config(args) -> int:
         print(f"  store {a.mountpoint} ({'sealed: ' + str(a.cipher_dir) if a.seal else 'plain'})")
         print(f"  notmuch profile {a.profile} · keyring {a.keyring or '-'}")
         print(f"  folders {a.folders} · sent_copy={a.sent_copy} · expunge={a.expunge}")
+    ag = inst.agent
+    print(f"\n[agent] since={ag.since or '(unset)'} · pending={ag.pending} · extract={ag.extract}"
+          f" · ignore={list(ag.ignore)}")
     return 0
 
 
@@ -414,6 +593,70 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--approved", metavar="ACCOUNT", nargs="?", const="all",
                    help="send every approved draft of ACCOUNT (default: all)")
     s.add_argument("--dry-run", action="store_true", help="print the compiled messages, send nothing")
+
+    s = add("agent", cmd_agent, "for agents: process new mail without missing any (own seen/done state)",
+            AGENT_HELP)
+    asub = s.add_subparsers(dest="action", metavar="<action>", required=True)
+
+    def aadd(name, help_, desc=None):
+        return asub.add_parser(name, help=help_, description=desc or help_,
+                               formatter_class=argparse.RawDescriptionHelpFormatter)
+
+    def spam_opt(x):
+        x.add_argument("--spam", choices=agent.SPAM_MODES, default="include",
+                       help="spam is pending too (default); exclude it, or only it")
+
+    def body_opts(x):
+        x.add_argument("--max-body", type=int, default=12000, metavar="N",
+                       help="cut each body after N characters, with a marker (default 12000)")
+        x.add_argument("--full", action="store_true", help="never cut a body")
+        x.add_argument("--json", action="store_true", help="machine-readable (schema 1)")
+
+    x = aadd("pending", "list threads with pending mail, oldest first; marks nothing",
+             "One line per thread with mail not yet processed by an agent, across the\n"
+             "open accounts: date of the newest pending message, accounts (a Message-ID\n"
+             "in several is listed once), pending/total, sender, subject, [spam], and\n"
+             "[answered …] when we sent something later — in the thread, or to that\n"
+             "sender from any open account. The id at the end is the ref for `agent read`.")
+    x.add_argument("account", nargs="?", help="account handle or 'all' (default: all)")
+    spam_opt(x)
+    x.add_argument("--json", action="store_true", help="machine-readable (schema 1)")
+    x = aadd("next", "print the next N pending threads, whole, and mark them seen",
+             "The oldest N pending threads (default 1), each whole: every message,\n"
+             "ours from Sent included, each labelled new / seen / done / ours / context.\n"
+             "After printing, the `new` ones are marked seen. Context is not marked.\n"
+             "Only threads with new mail: shown-but-not-done ones are in `pending`.")
+    x.add_argument("account", nargs="?", help="account handle or 'all' (default: all)")
+    x.add_argument("-n", type=int, default=1, help="how many threads (default 1)")
+    spam_opt(x)
+    body_opts(x)
+    x = aadd("read", "print the thread(s) of these messages and mark their new mail seen")
+    x.add_argument("refs", nargs="+", help="Message-IDs (id:… as `agent pending` prints them)")
+    body_opts(x)
+    x = aadd("show", "print the thread(s) like `read`, marking nothing: mail as context")
+    x.add_argument("refs", nargs="+", help="Message-IDs")
+    body_opts(x)
+    x = aadd("done", "mark seen messages done (what pending = \"undone\" waits for)",
+             "Closes messages already shown to an agent; one never shown is refused —\n"
+             "read it first. Only matters with [agent] pending = \"undone\".")
+    x.add_argument("refs", nargs="+", help="Message-IDs")
+    x.add_argument("--thread", action="store_true", help="every seen message of each ref's thread")
+    x = aadd("unsee", "back to pending: these ids, the last read batch, or everything since a time")
+    x.add_argument("refs", nargs="*", help="Message-IDs")
+    x.add_argument("--last", action="store_true", help="what the last next/read marked")
+    x.add_argument("--since", metavar="TIME", help="everything marked seen at or after TIME (ISO)")
+    x = aadd("attach", "write one attachment to a file ([agent] extract = true)",
+             "Parts and names are listed by read/show (\"Attachment: part N · name\").\n"
+             "DEST: a file (never overwritten) or a directory (the attachment's name).")
+    x.add_argument("ref", help="Message-ID")
+    x.add_argument("part", help="part number, or the file name")
+    x.add_argument("dest", help="file or directory")
+    x = aadd("log", "the ledger: what was marked, when (newest last)")
+    x.add_argument("account", nargs="?", help="account handle or 'all' (default: all)")
+    x.add_argument("-n", type=int, default=50, help="last N entries (default 50)")
+    x.add_argument("--json", action="store_true", help="machine-readable")
+    x = aadd("restore", "re-tag agent-seen/agent-done from the ledger (after an index rebuild)")
+    x.add_argument("account", nargs="?", help="account handle or 'all' (default: all)")
 
     add("config", cmd_config, "print the resolved config")
     return p

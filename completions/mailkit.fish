@@ -18,6 +18,7 @@ complete -c mailkit -n "not __fish_seen_subcommand_from $cmds" -a keyrings -d 'S
 complete -c mailkit -n "not __fish_seen_subcommand_from $cmds" -a nm -d 'notmuch on one account'
 complete -c mailkit -n "not __fish_seen_subcommand_from $cmds" -a draft -d 'Write, list, review drafts'
 complete -c mailkit -n "not __fish_seen_subcommand_from $cmds" -a send -d 'Send draft(s)'
+complete -c mailkit -n "not __fish_seen_subcommand_from $cmds" -a agent -d 'For agents: pending mail, own seen/done state'
 complete -c mailkit -n "not __fish_seen_subcommand_from $cmds" -a config -d 'Print the resolved config'
 
 function __mailkit_nargs
@@ -65,3 +66,25 @@ complete -c mailkit -n '__fish_seen_subcommand_from send' -l approved -d 'Send e
 complete -c mailkit -n '__fish_seen_subcommand_from send; and not __fish_seen_argument -l approved' -a '(mailkit __drafts)'
 complete -c mailkit -n '__fish_seen_subcommand_from send' -l dry-run -d 'Print, send nothing'
 complete -c mailkit -n '__fish_seen_subcommand_from keyrings' -l check -d 'Exit 0 only if the keyrings are unlocked'
+
+# agent: the agent's own state (seen/done), never unread
+set -l aacts pending next read show done unsee attach log restore
+complete -c mailkit -n "__fish_seen_subcommand_from agent; and not __fish_seen_subcommand_from $aacts" -a pending -d 'Threads not yet processed (marks nothing)'
+complete -c mailkit -n "__fish_seen_subcommand_from agent; and not __fish_seen_subcommand_from $aacts" -a next -d 'Next N pending threads, whole; marks seen'
+complete -c mailkit -n "__fish_seen_subcommand_from agent; and not __fish_seen_subcommand_from $aacts" -a read -d 'Thread of a message; marks its new mail seen'
+complete -c mailkit -n "__fish_seen_subcommand_from agent; and not __fish_seen_subcommand_from $aacts" -a show -d 'Thread as context; marks nothing'
+complete -c mailkit -n "__fish_seen_subcommand_from agent; and not __fish_seen_subcommand_from $aacts" -a done -d 'Seen messages done (pending = undone)'
+complete -c mailkit -n "__fish_seen_subcommand_from agent; and not __fish_seen_subcommand_from $aacts" -a unsee -d 'Back to pending'
+complete -c mailkit -n "__fish_seen_subcommand_from agent; and not __fish_seen_subcommand_from $aacts" -a attach -d 'Write an attachment to a file'
+complete -c mailkit -n "__fish_seen_subcommand_from agent; and not __fish_seen_subcommand_from $aacts" -a log -d 'The ledger: what was marked, when'
+complete -c mailkit -n "__fish_seen_subcommand_from agent; and not __fish_seen_subcommand_from $aacts" -a restore -d 'Re-tag from the ledger after a rebuild'
+complete -c mailkit -n '__fish_seen_subcommand_from agent; and __fish_seen_subcommand_from pending next log restore; and test (__mailkit_nargs) -eq 3' -a '(mailkit __accounts) all'
+complete -c mailkit -n '__fish_seen_subcommand_from agent; and __fish_seen_subcommand_from pending next' -l spam -x -a 'include exclude only' -d 'Spam: include (default), exclude, only'
+complete -c mailkit -n '__fish_seen_subcommand_from agent; and __fish_seen_subcommand_from pending next read show log' -l json -d 'JSON output (schema 1)'
+complete -c mailkit -n '__fish_seen_subcommand_from agent; and __fish_seen_subcommand_from next read show' -l full -d 'Never cut a body'
+complete -c mailkit -n '__fish_seen_subcommand_from agent; and __fish_seen_subcommand_from next read show' -l max-body -x -d 'Cut bodies after N characters'
+complete -c mailkit -n '__fish_seen_subcommand_from agent; and __fish_seen_subcommand_from next log' -s n -x -d 'How many'
+complete -c mailkit -n '__fish_seen_subcommand_from agent; and __fish_seen_subcommand_from done' -l thread -d 'Every seen message of the thread'
+complete -c mailkit -n '__fish_seen_subcommand_from agent; and __fish_seen_subcommand_from unsee' -l last -d 'What the last next/read marked'
+complete -c mailkit -n '__fish_seen_subcommand_from agent; and __fish_seen_subcommand_from unsee' -l since -x -d 'Everything marked since TIME (ISO)'
+complete -c mailkit -n '__fish_seen_subcommand_from agent; and __fish_seen_subcommand_from attach; and test (__mailkit_nargs) -eq 5' -F

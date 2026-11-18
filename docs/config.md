@@ -30,6 +30,14 @@ drafts = "INBOX.Drafts"
 trash = "INBOX.Trash"
 spam = "INBOX.Spam"
 
+[agent]                      # `mailkit agent`: an agent's own seen/done state (docs/workflows.md)
+since = "2026-11-01"         # older mail is never pending (still readable); "all": no cutoff.
+                             # Unset: `agent pending`/`next` refuse, so nobody gets years of mail by accident
+pending = "unseen"           # unseen: shown once to an agent = processed
+                             # undone: pending until `mailkit agent done`
+ignore = ["from:wordpress@example.org", "subject:\"[Newsletter]\""]   # notmuch queries kept out of pending
+extract = false              # true: `mailkit agent attach` may write attachments to disk
+
 [accounts.admin]             # the handle: lowercase letters, digits, '-'
 address = "admin@example.org"
 name = "Administration"      # display name in From:
@@ -60,6 +68,7 @@ Lookups search every unlocked database; writes go to the account's own one.
     mail/                  mbsync's mirror (read-only pull of the server)
     outbox/                drafts, a Maildir of MML files
     sent/                  what mailkit sent, compiled — the record if the Sent copy failed
+    agent/log.jsonl        the agent ledger: msgid, seen/done/unsee, when (append-only)
     .notmuch/              the index of all three
 ```
 
