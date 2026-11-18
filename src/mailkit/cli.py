@@ -47,17 +47,23 @@ person's, and nothing on the server:
 
   pending ─ next/read ─▶ seen ─ done ─▶ done        unsee: back to pending
 
-`next` and `read` mark seen what they print; `show` marks nothing. What counts
-as processed is [agent] pending in the TOML: "unseen" (shown once is enough) or
-"undone" (until `agent done`). Older than [agent] since is never pending.
+`next` and `read` mark seen what they print; `show` marks nothing. A thread
+is processed when `agent done` closes it ([agent] pending = "undone", the
+default): seen only means printed, and printed is not read — a tool may cut
+long output. pending = "unseen" makes seen enough. Older than [agent] since is
+never pending.
 
 the daily sweep:
   mailkit agent pending              what is left, one line per thread
-  mailkit agent next -n 5            the next 5 threads, whole; marks them seen
+  mailkit agent next -n 5            up to 5 new threads, whole; marks them seen
+                                     (last line ==== END …; missing = cut: unsee --last)
   mailkit agent read id:<msgid>      one thread; marks its new mail seen
-  mailkit agent show id:<msgid>      the same as context; marks nothing
-  mailkit agent unsee --last         a sweep cut short: back to pending
+  mailkit agent done --thread id:<msgid>   once it is in the report
+  mailkit agent show id:<msgid>      any thread as context; marks nothing
   mailkit agent attach id:<msgid> 2 /tmp/out/
+
+[answered …] is confirmed by the headers (same thread, or a reply to it from
+another account); [answered? …] only means we wrote to that sender later.
 
 Add --json for a stable document (schema 1): what scripts should parse.
 """
@@ -323,16 +329,24 @@ def _agent_accounts(inst, sel):
     return accts
 
 
-def _emit_threads(inst, views, args, mark: bool) -> int:
+def _emit_threads(inst, views, args, mark: bool, left: int | None = None) -> int:
     """Print the threads, then (read/next) mark what was new in them: after the
-    output, so a crash before it leaves them pending."""
+    output, so a crash before it leaves them pending.
+
+    mailkit cannot know whether the reader saw it all — a harness may cut long
+    output. The text ends with an END line: no END line, the output was cut
+    (agent unsee --last). Truncated JSON does not parse, which says the same."""
     todo = [i for v in views for i in agent.new_ids(v)] if mark else []
     if args.json:
-        print(json.dumps({"schema": agent.SCHEMA, "marks": todo, "threads": views},
+        print(json.dumps({"schema": agent.SCHEMA, "marks": todo, "left": left, "threads": views},
                          ensure_ascii=False, indent=2))
     else:
         for v in views:
             sys.stdout.write(agent.render(v))
+        print(f"==== END: {len(views)} thread(s), {len(todo)} message(s) "
+              + ("marked seen" if mark else "shown, nothing marked")
+              + ("" if left is None else f" · pending left: {left} thread(s)")
+              + " — no END line above this means the output was cut")
     sys.stdout.flush()
     if not mark:
         return 0
@@ -360,8 +374,10 @@ def cmd_agent(args) -> int:
         what = "seen by an agent" if info["pending_means"] == "unseen" else "marked done by an agent"
         print(f"pending since {info['since']} (processed = {what}) · {len(items)} thread(s), {n} message(s)")
         for it in items:
+            ans = it.answered
             flags = (" [spam]" if it.spam else "") + (
-                f" [answered {it.answered['date'][:10]}: {it.answered['how']}]" if it.answered else "")
+                "" if not ans else f" [answered {ans['date'][:10]}: {ans['how']}]" if ans["confirmed"]
+                else f" [answered? {ans['date'][:10]}: wrote to sender — confirm]")
             from_ = " ".join(it.sender.split())
             print(f"{agent._iso(it.last)[:16].replace('T', ' ')}  {','.join(it.accounts):<16} "
                   f"{len(it.ids)}/{it.total:<3} {from_[:30]:<30} {it.subject[:50]}{flags}  id:{it.ids[0]}")
@@ -378,11 +394,19 @@ def cmd_agent(args) -> int:
         if not items:
             print("nothing new pending" if inst.agent.pending == "undone" else "nothing pending")
             return 0
-        views = [agent.thread(inst, f"id:{it.ids[0]}", max_body) for it in items[:args.n]]
-        rc = _emit_threads(inst, views, args, mark=True)
-        left = len(items) - len(views)
-        log(f"pending left: {left} thread(s)" if left else "pending left: none (of what was listed)")
-        return rc
+        # Whole threads up to the budget; the first one always, even if it is over.
+        views, size = [], 0
+        for it in items[:args.n]:
+            v = agent.thread(inst, f"id:{it.ids[0]}", max_body)
+            n = len(json.dumps(v, ensure_ascii=False, indent=2) if args.json else agent.render(v))
+            if views and args.budget and size + n > args.budget:
+                break
+            views.append(v)
+            size += n
+        if args.budget and size > args.budget:
+            log(f"(one thread is {size} characters, over --budget {args.budget}: "
+                f"--max-body to cut bodies shorter)")
+        return _emit_threads(inst, views, args, mark=True, left=len(items) - len(views))
     if act in ("read", "show"):
         views, keys = [], set()
         for ref in args.refs:
@@ -616,8 +640,10 @@ def build_parser() -> argparse.ArgumentParser:
              "One line per thread with mail not yet processed by an agent, across the\n"
              "open accounts: date of the newest pending message, accounts (a Message-ID\n"
              "in several is listed once), pending/total, sender, subject, [spam], and\n"
-             "[answered …] when we sent something later — in the thread, or to that\n"
-             "sender from any open account. The id at the end is the ref for `agent read`.")
+             "[answered …] when we sent something later — in the thread, or replying to\n"
+             "it from another account (both confirmed by the headers), or [answered? …]\n"
+             "when we only wrote to that sender since: unconfirmed, read it.\n"
+             "The id at the end is the ref for `agent read`.")
     x.add_argument("account", nargs="?", help="account handle or 'all' (default: all)")
     spam_opt(x)
     x.add_argument("--json", action="store_true", help="machine-readable (schema 1)")
@@ -625,9 +651,14 @@ def build_parser() -> argparse.ArgumentParser:
              "The oldest N pending threads (default 1), each whole: every message,\n"
              "ours from Sent included, each labelled new / seen / done / ours / context.\n"
              "After printing, the `new` ones are marked seen. Context is not marked.\n"
-             "Only threads with new mail: shown-but-not-done ones are in `pending`.")
+             "Only threads with new mail: shown-but-not-done ones are in `pending`.\n"
+             "Whole threads until --budget characters; the last line is ==== END …:\n"
+             "if it is missing, the output was cut on the way — agent unsee --last.")
     x.add_argument("account", nargs="?", help="account handle or 'all' (default: all)")
-    x.add_argument("-n", type=int, default=1, help="how many threads (default 1)")
+    x.add_argument("-n", type=int, default=1, help="at most this many threads (default 1)")
+    x.add_argument("--budget", type=int, default=20000, metavar="CHARS",
+                   help="stop adding whole threads past CHARS of output (default 20000; 0: none)."
+                   " Fewer threads than -n is normal: run next again")
     spam_opt(x)
     body_opts(x)
     x = aadd("read", "print the thread(s) of these messages and mark their new mail seen")

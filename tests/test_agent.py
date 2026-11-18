@@ -28,7 +28,8 @@ class AgentTest(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="mailkit-agent-"))
         self.cfg = self.tmp / "config.toml"
-        self.write_cfg('since = "2026-11-01"\nignore = ["from:wordpress@blog.org"]\nextract = true\n')
+        self.write_cfg('since = "2026-11-01"\npending = "unseen"\nignore = ["from:wordpress@blog.org"]\n'
+                       'extract = true\n')
         self.env_backup = dict(os.environ)
         os.environ.update({
             "MAILKIT_CONFIG": str(self.cfg),
@@ -53,6 +54,14 @@ class AgentTest(unittest.TestCase):
         dup = msg("dup@x", "Red <avisos@red.es>", f"{A}, anton@example.org", 7, "Notificación")
         self.put("admin", "INBOX", "dup", dup)
         self.put("anton", "INBOX", "dup", dup)
+        # Answered from another account as a reply (In-Reply-To): confirmed.
+        self.put("admin", "INBOX", "kd", msg("kd@x", "Red <avisos@red.es>", A, 7, "Requerimiento KD/0001"))
+        self.put("anton", "Sent", "rkd", msg("rkd@us", "anton@example.org", "avisos@red.es", 8,
+                                             "Re: Requerimiento KD/0001", "adjunto\n", ["kd@x"]))
+        # A campaign of ours to the sender later on is no answer at all.
+        self.put("admin", "INBOX", "pepe", msg("pepe@x", "Pepe <pepe@z.org>", A, 7, "Duda"))
+        self.put("anton", "Sent", "news", msg("news@us", "anton@example.org", "pepe@z.org", 8, "Novedades",
+                                              extra="List-Unsubscribe: <mailto:baja@example.org>\n"))
         self.put("admin", "Spam", "bounce", msg("bounce@x", "MAILER-DAEMON <md@x.org>", A, 8, "Undelivered"))
         self.put("admin", "INBOX", "wp", msg("wp@x", "wordpress@blog.org", A, 9, "Comentario pendiente"))
         html = ("Content-Type: multipart/mixed; boundary=B\n", "--B\nContent-Type: text/html\n\n"
@@ -112,22 +121,31 @@ address = "anton@example.org"
         self.assertEqual(doc["schema"], 1)
         self.assertEqual(doc["since"], "2026-11-01")
         # Oldest first; before the cutoff, ours, and ignored noise are not pending.
-        self.assertEqual(self.pending_ids(), ["q1@x", "q2@x", "ana@x", "dup@x", "bounce@x", "html@x"])
+        self.assertEqual(self.pending_ids(),
+                         ["q1@x", "q2@x", "ana@x", "dup@x", "kd@x", "pepe@x", "bounce@x", "html@x"])
         self.assertEqual(doc["ignored"], 1)
         by = {t["ref"]: t for t in doc["threads"]}
         # q1 and q2 are one thread; the reply of ours (3 Nov) is older than q2: not answered.
         self.assertEqual(by["id:q1@x"]["messages"], 3)
         self.assertIsNone(by["id:q1@x"]["answered"])
-        # Ana was answered from the other account, to the same sender.
+        # Ana: we only wrote to her later, from the other account — not confirmed.
         self.assertEqual(by["id:ana@x"]["answered"]["how"], "sender")
+        self.assertFalse(by["id:ana@x"]["answered"]["confirmed"])
         self.assertEqual(by["id:ana@x"]["answered"]["account"], "anton")
+        # KD: a reply by its headers, from the other account — confirmed.
+        self.assertEqual((by["id:kd@x"]["answered"]["how"], by["id:kd@x"]["answered"]["confirmed"]),
+                         ("reply", True))
+        self.assertIsNone(by["id:pepe@x"]["answered"])  # the campaign does not count
+        text = run("agent", "pending")[1]
+        self.assertIn("[answered? 2026-11-06: wrote to sender — confirm]", text)
+        self.assertIn("[answered 2026-11-08: reply]", text)
         # One Message-ID, two accounts: listed once.
         self.assertEqual(by["id:dup@x"]["accounts"], ["admin", "anton"])
         self.assertTrue(by["id:bounce@x"]["spam"])
         self.assertEqual(self.pending_ids("--spam", "exclude").count("bounce@x"), 0)
         self.assertEqual(self.pending_ids("--spam", "only"), ["bounce@x"])
         # Listing marks nothing, and `unread` is never touched by any of this.
-        self.assertEqual(len(self.pending_ids()), 6)
+        self.assertEqual(len(self.pending_ids()), 8)
 
         # show: the whole thread, ours included, labelled; marks nothing.
         rc, out, err = run("agent", "show", "--json", "id:q2@x")
@@ -135,7 +153,7 @@ address = "anton@example.org"
         t = json.loads(out)["threads"][0]
         self.assertEqual([(m["id"], m["state"]) for m in t["messages"]],
                          [("q1@x", "new"), ("r1@us", "ours"), ("q2@x", "new")])
-        self.assertEqual(len(self.pending_ids()), 6)
+        self.assertEqual(len(self.pending_ids()), 8)
 
         # next: the oldest thread, then marked seen — only what was new in it.
         rc, out, err = run("agent", "next")
@@ -143,7 +161,8 @@ address = "anton@example.org"
         self.assertIn("Expediente", out)
         self.assertIn("visto", out)  # our reply, from Sent
         self.assertIn("marked seen: 2", err)
-        self.assertEqual(self.pending_ids(), ["ana@x", "dup@x", "bounce@x", "html@x"])
+        self.assertIn("==== END: 1 thread(s), 2 message(s) marked seen · pending left: 6", out)
+        self.assertEqual(self.pending_ids(), ["ana@x", "dup@x", "kd@x", "pepe@x", "bounce@x", "html@x"])
         # Read again: the same messages are now context-for-the-record (seen), nothing new.
         rc, out, err = run("agent", "read", "id:q1@x")
         self.assertIn("seen", out)
@@ -186,8 +205,18 @@ address = "anton@example.org"
         rc, out, _ = run("agent", "log", "--json")
         self.assertEqual({e["op"] for e in json.loads(out)}, {"seen", "unsee"})
 
+    def test_next_stops_at_the_budget_and_marks_only_what_it_printed(self):
+        rc, out, err = run("agent", "next", "-n", "5", "--budget", "500")
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(out.count("━━━━ "), 1)  # the first thread always, then over budget
+        self.assertIn("pending left: 6", out)
+        self.assertEqual(self.pending_ids()[:2], ["ana@x", "dup@x"])
+        rc, out, _ = run("agent", "next", "-n", "5", "--budget", "0", "--json")
+        doc = json.loads(out)
+        self.assertEqual((len(doc["threads"]), doc["left"]), (5, 1))
+
     def test_pending_undone_and_done(self):
-        self.write_cfg('since = "2026-11-01"\npending = "undone"\n')
+        self.write_cfg('since = "2026-11-01"\n')  # undone is the default
         rc, _, err = run("agent", "done", "id:q1@x")
         self.assertEqual(rc, 1)
         self.assertIn("never shown", err)

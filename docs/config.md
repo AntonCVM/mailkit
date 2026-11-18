@@ -33,8 +33,8 @@ spam = "INBOX.Spam"
 [agent]                      # `mailkit agent`: an agent's own seen/done state (docs/workflows.md)
 since = "2026-11-01"         # older mail is never pending (still readable); "all": no cutoff.
                              # Unset: `agent pending`/`next` refuse, so nobody gets years of mail by accident
-pending = "unseen"           # unseen: shown once to an agent = processed
-                             # undone: pending until `mailkit agent done`
+pending = "undone"           # default: pending until `mailkit agent done` (printed ≠ read:
+                             # a harness may cut long output). unseen: shown once = processed
 ignore = ["from:wordpress@example.org", "subject:\"[Newsletter]\""]   # notmuch queries kept out of pending
 extract = false              # true: `mailkit agent attach` may write attachments to disk
 

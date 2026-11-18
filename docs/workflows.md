@@ -93,9 +93,13 @@ pending ── agent next / read ──▶ seen ── agent done ──▶ done
 - **Marking is part of reading.** `next` and `read` mark seen the new mail they
   print, right after printing it; nothing to remember afterwards. `show` prints
   the same and marks nothing: old mail as context. `pending` lists and marks nothing.
-- **What counts as processed** is `[agent] pending`: `"unseen"` — shown once is
-  enough — or `"undone"`, pending until `agent done` (for flows where an agent may
-  be shown a message and not deal with it; `done` refuses a message never shown).
+- **What counts as processed** is `[agent] pending`: `"undone"` (the default),
+  pending until `agent done`; or `"unseen"`, shown once is enough. Printed is not
+  read: an agent's tool may cut long output, and what it never saw would be lost
+  under `"unseen"`. Under `"undone"` the worst case is a thread listed again.
+  `done` refuses a message never shown; `next` serves only threads with new mail,
+  so shown-but-open ones are found in `pending` (state `seen`) and closed with
+  `done --thread`.
 - **Cutoff.** `[agent] since = "YYYY-MM-DD"`: older mail is never pending. Until
   it is set, `pending` and `next` refuse.
 - **What is pending:** received since the cutoff, in an open account — spam
@@ -105,8 +109,12 @@ pending ── agent next / read ──▶ seen ── agent done ──▶ done
 - **A Message-ID is one message** across the instance: in two accounts it is
   listed once, with both, and marked in both.
 - **Answered?** `pending` and `read` say when something of ours is later than the
-  last received message: in the same thread (`how: thread`), or to that sender
-  from any open account (`how: sender`). A closed account is not looked at.
+  last received message, strongest evidence first: in the same thread (`how:
+  thread`); a reply to one of its messages by In-Reply-To/References from any
+  account (`how: reply` — answered from another account); both `confirmed: true`.
+  Else, anything later addressed to that sender (`how: sender`, `confirmed:
+  false`, `[answered? …]`): may be about something else — read it. Campaigns
+  (List-Unsubscribe, Precedence: bulk) never count. A closed account is not looked at.
 - **Whole threads.** `read`/`show`/`next` print the whole thread, oldest first,
   ours from Sent included, each message labelled `new` (marked now), `seen`,
   `done`, `ours` or `context` (before the cutoff, ignored). Attachments are listed
@@ -132,22 +140,25 @@ mailkit agent log [-n 50] [--json] ; mailkit agent restore [acct]
 ```
 
 A long backlog goes in parts: `pending` first (one line each), then `next -n N`
-or `read` thread by thread. Don't pipe `next`/`read` through `head`: what was
-printed is marked, whether or not the reader got to it — `show` is for peeking.
+or `read` thread by thread. `next` stops adding whole threads past `--budget`
+characters (20000; fewer than `-n` is normal — run it again) and marks only what
+it printed. Its text ends with a line `==== END: …`; if the reader does not see
+it, the output was cut on the way: `agent unsee --last`. (Truncated `--json`
+does not parse, which says the same.) Don't pipe `next`/`read` through `head`.
 
 **For scripts:** `--json` on `pending`, `next`, `read`, `show` is one document
 with `"schema": 1`, which changes only incompatibly. A project-specific step
 (case numbers, deadlines) reads it instead of mailkit growing hooks:
 
 ```sh
-mailkit agent pending --json | jq -r '.threads[] | select(.answered == null) | .ref'
+mailkit agent pending --json | jq -r '.threads[] | select(.answered.confirmed != true) | .ref'
 mailkit agent show --json id:<msgid> | jq -r '.threads[].messages[].body' | rg -o 'KD/[0-9]+'
 ```
 
 `pending` → `threads[]`: `ref`, `account`, `accounts`, `thread`, `subject`, `from`,
 `first`, `last`, `messages`, `pending[]` (`id`, `state`), `spam`, `answered`
-(`null` or `how`, `account`, `id`, `date`). `next`/`read`/`show` → `marks` (the ids
-marked after the output) and `threads[]`: `ref`, `account`, `accounts`, `thread`,
+(`null` or `how` thread|reply|sender, `confirmed`, `account`, `id`, `date`). `next`/`read`/`show` → `marks` (the ids
+marked after the output), `left` (next: pending threads not printed) and `threads[]`: `ref`, `account`, `accounts`, `thread`,
 `subject`, `answered`, `messages[]` (`id`, `state`, `pending`, `accounts`, `date`,
 `from`, `to`, `cc`, `subject`, `tags`, `spam`, `body_from`, `body`, `attachments[]`
 with `part`, `filename`, `type`, `size`).

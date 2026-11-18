@@ -52,8 +52,8 @@ mailkit draft new <account> < msg.mml ; mailkit send <id>
 ```
 
 Agents that process the mail daily: `mailkit agent pending`, `agent next` (prints
-whole threads and marks them seen, apart from `unread`), `agent show` (context,
-marks nothing) — `mailkit agent --help`.
+whole threads and marks them seen, apart from `unread`), `agent done` (closes
+them), `agent show` (context, marks nothing) — `mailkit agent --help`.
 
 `mailkit --help` and `mailkit <command> --help` for everything;
 [docs/workflows.md](docs/workflows.md) for drafts, review and scheduled flows;

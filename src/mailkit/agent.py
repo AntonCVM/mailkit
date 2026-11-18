@@ -13,9 +13,10 @@ Per message, three states:
 Marking happens in the command that prints the mail (`agent next`, `agent
 read`), after the output was written: it never depends on the agent
 remembering. `agent show` prints the same thread and marks nothing — mail as
-context. What counts as processed is `[agent] pending`: "unseen" (shown once
-is enough) or "undone" (until `agent done`, for flows where shown is not yet
-handled).
+context. What counts as processed is `[agent] pending`: "undone" (the
+default: until `agent done`) or "unseen" (shown once is enough). Printed is
+not read — an agent's tool may cut long output — so only "undone" never loses
+a message an agent did not see whole.
 
 The truth is the ledger, `<store>/agent/log.jsonl`, append-only and inside the
 seal: msgid, operation, time. The `agent-seen` / `agent-done` tags are its
@@ -262,6 +263,23 @@ class Sent:
     ts: int
     thread: str
     rcpts: set[str]
+    refs: set[str]   # In-Reply-To + References: what it answers, whatever the account
+    bulk: bool       # List-Unsubscribe / Precedence: a campaign, never a reply
+
+
+_MSGID_RE = re.compile(r"<([^<>\s]+)>")
+
+
+def _headers_of(path: str) -> tuple[set[str], bool]:
+    try:
+        with open(path, "rb") as f:
+            h = BytesParser(policy=email_policy).parse(f, headersonly=True)
+    except OSError:
+        return set(), False
+    refs = set(_MSGID_RE.findall(f"{h.get('In-Reply-To', '')} {h.get('References', '')}"))
+    bulk = bool(h.get("List-Unsubscribe")) or \
+        str(h.get("Precedence", "")).strip().lower() in ("bulk", "list", "junk")
+    return refs, bulk
 
 
 def _sent_since(inst: Instance, ts: int) -> list[Sent]:
@@ -282,20 +300,32 @@ def _sent_since(inst: Instance, ts: int) -> list[Sent]:
                 # Empty fields out: a strict getaddresses() rejects the whole list for one.
                 fields = [v for v in (h.get("To"), h.get("Cc"), h.get("Bcc")) if v]
                 rc = {addr.lower() for _, addr in getaddresses(fields) if addr}
-                out.append(Sent(a.handle, m["id"], m.get("timestamp", 0), thread_of.get(m["id"], ""), rc))
+                refs, bulk = _headers_of((m.get("filename") or [""])[0])
+                out.append(Sent(a.handle, m["id"], m.get("timestamp", 0), thread_of.get(m["id"], ""),
+                                rc, refs, bulk))
     return out
 
 
-def answered(sent: list[Sent], account: str, thread: str, sender: str, after: int) -> dict | None:
-    """A message of ours later than `after`: in the same thread of that
-    account, else to the same sender from any account. None: none found
-    (among the open accounts — a closed one was not looked at)."""
+def answered(sent: list[Sent], account: str, thread: str, thread_ids: set[str], sender: str,
+             after: int) -> dict | None:
+    """A message of ours later than `after`, strongest evidence first:
+
+    thread  in the same thread of that account                      confirmed
+    reply   answers a message of the thread (In-Reply-To/References),
+            from any account — the reply sent from another one      confirmed
+    sender  only addressed to the same sender, not a reply to this
+            thread; campaigns (List-Unsubscribe, Precedence) out    NOT confirmed:
+            a later mail to that address may be about anything     read it
+
+    None: none found among the open accounts (a closed one was not looked at)."""
     later = sorted((s for s in sent if s.ts > after), key=lambda s: s.ts)
     for how, hit in (("thread", lambda s: s.account == account and s.thread == thread),
-                     ("sender", lambda s: bool(sender) and sender in s.rcpts)):
+                     ("reply", lambda s: bool(s.refs & thread_ids)),
+                     ("sender", lambda s: bool(sender) and sender in s.rcpts and not s.bulk)):
         for s in later:
             if hit(s):
-                return {"how": how, "account": s.account, "id": s.id, "date": _iso(s.ts)}
+                return {"how": how, "confirmed": how != "sender", "account": s.account,
+                        "id": s.id, "date": _iso(s.ts)}
     return None
 
 
@@ -317,6 +347,7 @@ class Item:
     spam: bool = False
     states: dict[str, str] = field(default_factory=dict)  # id → new | seen
     answered: dict | None = None
+    thread_ids: set[str] = field(default_factory=set)     # every message of the thread
 
     def json(self) -> dict:
         return {"ref": f"id:{self.ids[0]}", "account": self.account, "accounts": self.accounts,
@@ -353,7 +384,8 @@ def pending(inst: Instance, accts: list[Account], spam: str = "include") -> tupl
             if not fresh:
                 continue
             it = Item(a.handle, t["thread"], fresh, [a.handle], " ".join(t.get("subject", "").split()),
-                      total=t.get("total", 0))
+                      total=t.get("total", 0),
+                      thread_ids={bare("id:" + m) for q_ in t["query"] for m in _ID_RE.findall(q_ or "")})
             for i in fresh:
                 claimed[i] = it
             mine.append(it)
@@ -373,7 +405,7 @@ def pending(inst: Instance, accts: list[Account], spam: str = "include") -> tupl
     if items:
         sent = _sent_since(inst, min(it.last for it in items) + 1)
         for it in items:
-            it.answered = answered(sent, it.account, it.thread, _addr(it.sender), it.last)
+            it.answered = answered(sent, it.account, it.thread, it.thread_ids, _addr(it.sender), it.last)
     info = {"since": inst.agent.since, "pending_means": inst.agent.pending, "spam": spam,
             "ignored": ignored, "closed_accounts": [a.handle for a in accts if not seal.is_open(a)]}
     return items, info
@@ -530,8 +562,8 @@ def thread(inst: Instance, ref: str, max_body: int | None = None) -> dict:
     ans = None
     if last_in is not None:
         sent = _sent_since(inst, last_in.get("timestamp", 0) + 1)
-        ans = answered(sent, a.handle, tid, _addr(last_in.get("headers", {}).get("From", "")),
-                       last_in.get("timestamp", 0))
+        ans = answered(sent, a.handle, tid, {m["id"] for m in msgs},
+                       _addr(last_in.get("headers", {}).get("From", "")), last_in.get("timestamp", 0))
     return {"ref": f"id:{msgid}", "account": a.handle, "accounts": [b.handle for b in accts],
             "thread": tid, "subject": " ".join((msgs[0].get("headers", {}).get("Subject", "")
                                                 if msgs else "").split()),
@@ -586,7 +618,10 @@ def _size(n: int) -> str:
 def _ans(ans: dict | None) -> str:
     if not ans:
         return "no reply of ours found after the last received message (open accounts)"
-    where = "in this thread" if ans["how"] == "thread" else "to the same sender"
+    if not ans["confirmed"]:
+        return (f"unconfirmed — {ans['date']} from {ans['account']} we wrote to the same sender, "
+                f"not as a reply to this thread: read it (agent show id:{ans['id']})")
+    where = "in this thread" if ans["how"] == "thread" else "replying to this thread"
     return f"yes — {ans['date']} from {ans['account']}, {where}: id:{ans['id']}"
 
 

@@ -51,8 +51,9 @@ class AgentPolicy:
     # YYYY-MM-DD: older mail is never pending (still readable). "all": no cutoff.
     # None: not decided yet, and `agent pending/next` refuse to guess.
     since: str | None = None
-    # unseen: shown to an agent once = processed. undone: until `agent done`.
-    pending: str = "unseen"
+    # undone: pending until `agent done` — output an agent never saw whole (a
+    # harness cuts long output) stays pending. unseen: shown once = processed.
+    pending: str = "undone"
     # notmuch queries left out of pending (noise); still searchable and readable.
     ignore: tuple[str, ...] = ()
     # Whether `agent attach` may write an attachment to disk.
@@ -197,7 +198,7 @@ def _agent(raw: dict) -> AgentPolicy:
         since = str(since)  # a bare TOML date arrives as datetime.date
         if since != "all" and not DATE_RE.match(since):
             raise ConfigError(f"agent.since is YYYY-MM-DD or \"all\", got '{since}'")
-    pending = raw.get("pending", "unseen")
+    pending = raw.get("pending", "undone")
     if pending not in AGENT_PENDING:
         raise ConfigError(f"agent.pending is one of {AGENT_PENDING}, got '{pending}'")
     ignore = raw.get("ignore", [])
